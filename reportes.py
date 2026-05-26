@@ -1,6 +1,9 @@
 import os
+import re
+import sys
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -19,16 +22,25 @@ CURSOS_REPORTE = [
 FILAS_POR_BLOQUE = 23
 
 
-def generar_consolidado_pdf(dni):
-    detalle = database.obtener_detalle_alumno(dni)
-    historial = database.obtener_historial_notas(dni)
+def obtener_directorio_app():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+def generar_consolidado_pdf(identificador):
+    detalle = database.obtener_detalle_alumno(identificador)
 
     if not detalle:
         return False, "Alumno no encontrado en los registros."
 
-    nombre_archivo = f"Constancia_Notas_{dni}.pdf"
+    codigo_matricula, dni = detalle[0], detalle[1]
+    historial = database.obtener_historial_notas(dni)
+
+    nombre_archivo = obtener_directorio_app() / f"Constancia_Notas_{sanitizar_nombre_archivo(codigo_matricula)}.pdf"
+    ruta_pdf = str(nombre_archivo)
     doc = SimpleDocTemplate(
-        nombre_archivo,
+        ruta_pdf,
         pagesize=landscape(A4),
         rightMargin=18,
         leftMargin=18,
@@ -43,14 +55,18 @@ def generar_consolidado_pdf(dni):
 
     try:
         doc.build(elementos)
-        os.startfile(nombre_archivo)
+        os.startfile(ruta_pdf)
         return True, "Constancia de notas generada correctamente."
     except Exception as e:
         return False, f"Error al generar la constancia: {str(e)}"
 
 
+def sanitizar_nombre_archivo(valor):
+    return re.sub(r'[<>:"/\\|?*]', "_", str(valor)).strip() or "sin_codigo"
+
+
 def crear_encabezado(detalle, historial, styles):
-    dni, nombres, apellidos, aula, fecha_inicio, fecha_fin = detalle
+    codigo_matricula, dni, nombres, apellidos, aula, fecha_inicio, fecha_fin = detalle
     nombre_alumno = f"{apellidos}, {nombres}"
 
     estilo_titulo = ParagraphStyle(
@@ -73,9 +89,15 @@ def crear_encabezado(detalle, historial, styles):
     data_info = [
         [
             Paragraph("<b>Codigo</b>", styles["Normal"]),
-            Paragraph(f"<b>{dni}</b>", styles["Normal"]),
+            Paragraph(f"<b>{codigo_matricula}</b>", styles["Normal"]),
             Paragraph("<b>Aula</b>", styles["Normal"]),
             Paragraph(f"<b>{aula}</b>", styles["Normal"]),
+        ],
+        [
+            Paragraph("<b>DNI</b>", styles["Normal"]),
+            Paragraph(f"<b>{dni}</b>", styles["Normal"]),
+            "",
+            "",
         ],
         [
             Paragraph("<b>Alumno</b>", styles["Normal"]),
@@ -86,7 +108,7 @@ def crear_encabezado(detalle, historial, styles):
     ]
     tabla_info = Table(data_info, colWidths=[55, 250, 50, 160])
     tabla_info.setStyle(TableStyle([
-        ("SPAN", (1, 1), (3, 1)),
+        ("SPAN", (1, 2), (3, 2)),
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 11),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),

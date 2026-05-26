@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 venv/
 *.pdf
+build/
+dist/
+tcl_debug/
+*.zip

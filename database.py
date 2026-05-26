@@ -1,13 +1,25 @@
 import sqlite3
+import sys
 from datetime import date
+from pathlib import Path
 
 
-ARCHIVO_DB = "datos_academia.db"
+def obtener_directorio_app():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+ARCHIVO_DB = obtener_directorio_app() / "datos_academia.db"
 CURSOS_OFICIALES = [
     ("LEX", "LEXICON"),
     ("CG", "CULTURA GENERAL"),
     ("CPP", "CONSTITUCION POLITICA DEL PERU"),
     ("MAT", "MATEMATICA"),
+]
+USUARIOS_INICIALES = [
+    ("ADMIN", "admin123", "Administrador Maestro", "Admin"),
+    ("GESTION", "gestion123", "Usuario de Gestion", "Gestion"),
 ]
 
 
@@ -50,10 +62,10 @@ def inicializar_base_datos():
         );
     """)
 
-    cursor.execute(
-        "INSERT OR IGNORE INTO Usuarios_Sistema VALUES ('ADMIN', 'admin123', 'Administrador Maestro', 'Admin')"
-    )
+    cursor.executemany("INSERT OR IGNORE INTO Usuarios_Sistema VALUES (?, ?, ?, ?)", USUARIOS_INICIALES)
     sincronizar_cursos(cursor)
+    asegurar_codigo_matricula(cursor)
+    normalizar_codigos_matricula(cursor)
 
     conexion.commit()
     conexion.close()
@@ -62,6 +74,84 @@ def inicializar_base_datos():
 def sincronizar_cursos(cursor):
     cursor.execute("DELETE FROM Cursos")
     cursor.executemany("INSERT INTO Cursos VALUES (?, ?)", CURSOS_OFICIALES)
+
+
+def asegurar_codigo_matricula(cursor):
+    columnas = [columna[1] for columna in cursor.execute("PRAGMA table_info(Alumnos)").fetchall()]
+    if "Codigo_Matricula" not in columnas:
+        cursor.execute("ALTER TABLE Alumnos ADD COLUMN Codigo_Matricula TEXT")
+
+    for rowid, in cursor.execute(
+        """
+        SELECT rowid
+        FROM Alumnos
+        WHERE Codigo_Matricula IS NULL OR trim(Codigo_Matricula) = ''
+        ORDER BY rowid
+        """
+    ).fetchall():
+        cursor.execute(
+            "UPDATE Alumnos SET Codigo_Matricula = ? WHERE rowid = ?",
+            (obtener_siguiente_codigo_matricula(cursor), rowid)
+        )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_alumnos_codigo_matricula
+        ON Alumnos(Codigo_Matricula)
+        """
+    )
+
+
+def normalizar_codigos_matricula(cursor):
+    registros = cursor.execute(
+        """
+        SELECT rowid
+        FROM Alumnos
+        WHERE Codigo_Matricula LIKE 'MAT-%'
+           OR Codigo_Matricula IS NULL
+           OR trim(Codigo_Matricula) = ''
+           OR Codigo_Matricula NOT GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
+        ORDER BY rowid
+        """
+    ).fetchall()
+    for rowid, in registros:
+        cursor.execute(
+            "UPDATE Alumnos SET Codigo_Matricula = ? WHERE rowid = ?",
+            (obtener_siguiente_codigo_matricula(cursor), rowid)
+        )
+
+
+def obtener_siguiente_codigo_matricula(cursor=None):
+    cerrar_conexion = False
+    if cursor is None:
+        conexion = conectar()
+        cursor = conexion.cursor()
+        cerrar_conexion = True
+
+    codigos = [
+        fila[0]
+        for fila in cursor.execute(
+            """
+            SELECT Codigo_Matricula
+            FROM Alumnos
+            WHERE Codigo_Matricula IS NOT NULL AND trim(Codigo_Matricula) != ''
+            """
+        ).fetchall()
+    ]
+    codigos_validos = [
+        int(codigo)
+        for codigo in codigos
+        if codigo.isdigit() and len(codigo) == 6
+    ]
+    siguiente = max(codigos_validos) + 1 if codigos_validos else 1
+    codigos_existentes = set(codigos)
+
+    while f"{siguiente:06d}" in codigos_existentes:
+        siguiente += 1
+
+    if cerrar_conexion:
+        conexion.close()
+
+    return f"{siguiente:06d}"
 
 
 def crear_aula(nombre, f_inicio, f_fin):
@@ -112,14 +202,140 @@ def validar_login(usuario, password):
     return False, "", ""
 
 
-def insertar_alumno(dni, nom, ape, tel, id_aula, user):
+def insertar_alumno(codigo_matricula, dni, nom, ape, tel, id_aula, user):
+    codigo_matricula = codigo_matricula.strip().upper()
+    dni = dni.strip()
     conexion = conectar()
     try:
         cursor = conexion.cursor()
-        cursor.execute("INSERT INTO Alumnos VALUES (?,?,?,?,?,?)", (dni, nom, ape, tel, id_aula, user))
+        cursor.execute(
+            """
+            INSERT INTO Alumnos (
+                Codigo_Matricula, DNI, Nombres, Apellidos, Telefono, ID_Aula, Usuario_Registro
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (codigo_matricula, dni, nom, ape, tel, id_aula, user)
+        )
         conexion.commit()
-        return True, "Alumno registrado."
+        return True, "Estudiante registrado correctamente."
+    except sqlite3.IntegrityError as e:
+        mensaje = str(e)
+        if "Codigo_Matricula" in mensaje:
+            return False, "El codigo de matricula ya existe."
+        if "Alumnos.DNI" in mensaje or "UNIQUE constraint failed: Alumnos.DNI" in mensaje:
+            return False, "El DNI ya existe."
+        return False, mensaje
     except Exception as e:
+        return False, str(e)
+    finally:
+        conexion.close()
+
+
+def obtener_alumnos():
+    """Devuelve alumnos con su aula para seleccion y mantenimiento."""
+    conexion = conectar()
+    if not conexion:
+        return []
+
+    cursor = conexion.cursor()
+    cursor.execute(
+        """
+        SELECT
+            A.Codigo_Matricula,
+            A.DNI,
+            A.Nombres,
+            A.Apellidos,
+            A.Telefono,
+            A.ID_Aula,
+            AU.Nombre_Aula
+        FROM Alumnos A
+        LEFT JOIN Aulas AU ON A.ID_Aula = AU.ID_Aula
+        ORDER BY A.Apellidos, A.Nombres
+        """
+    )
+    res = cursor.fetchall()
+    conexion.close()
+    return res
+
+
+def obtener_alumno_por_dni(dni):
+    """Busca los datos editables de un alumno por DNI."""
+    conexion = conectar()
+    if not conexion:
+        return None
+
+    cursor = conexion.cursor()
+    cursor.execute(
+        """
+        SELECT Codigo_Matricula, DNI, Nombres, Apellidos, Telefono, ID_Aula
+        FROM Alumnos
+        WHERE DNI = ?
+        """,
+        (dni.strip(),)
+    )
+    res = cursor.fetchone()
+    conexion.close()
+    return res
+
+
+def actualizar_alumno(dni_original, codigo_matricula, dni, nom, ape, tel, id_aula):
+    """Actualiza datos del alumno y conserva sus evaluaciones si cambia el DNI."""
+    codigo_matricula = codigo_matricula.strip().upper()
+    dni_original = dni_original.strip()
+    dni = dni.strip()
+    conexion = conectar()
+    try:
+        cursor = conexion.cursor()
+        cursor.execute(
+            """
+            UPDATE Alumnos
+            SET Codigo_Matricula = ?, DNI = ?, Nombres = ?, Apellidos = ?,
+                Telefono = ?, ID_Aula = ?
+            WHERE DNI = ?
+            """,
+            (codigo_matricula, dni, nom, ape, tel, id_aula, dni_original)
+        )
+        if cursor.rowcount == 0:
+            return False, "No se encontro el estudiante seleccionado."
+
+        if dni_original != dni:
+            cursor.execute("UPDATE Evaluaciones SET DNI = ? WHERE DNI = ?", (dni, dni_original))
+
+        conexion.commit()
+        return True, "Datos del estudiante actualizados correctamente."
+    except sqlite3.IntegrityError as e:
+        mensaje = str(e)
+        if "Codigo_Matricula" in mensaje:
+            return False, "El codigo de matricula ya existe."
+        if "Alumnos.DNI" in mensaje or "UNIQUE constraint failed: Alumnos.DNI" in mensaje:
+            return False, "El DNI ya existe."
+        return False, mensaje
+    except Exception as e:
+        return False, str(e)
+    finally:
+        conexion.close()
+
+
+def eliminar_alumno(dni):
+    """Elimina un alumno y sus evaluaciones asociadas."""
+    conexion = conectar()
+    if not conexion:
+        return False, "No se pudo conectar a la base de datos."
+
+    try:
+        cursor = conexion.cursor()
+        dni = dni.strip()
+        cursor.execute("DELETE FROM Evaluaciones WHERE DNI = ?", (dni,))
+        cursor.execute("DELETE FROM Alumnos WHERE DNI = ?", (dni,))
+        if cursor.rowcount == 0:
+            conexion.rollback()
+            return False, "No se encontro el estudiante seleccionado."
+
+        conexion.commit()
+        return True, "Estudiante eliminado correctamente."
+    except Exception as e:
+        conexion.rollback()
         return False, str(e)
     finally:
         conexion.close()
@@ -142,7 +358,8 @@ def buscar_alumno_con_aula(dni):
     return f"{res[0]} {res[1]} [{res[2]}]" if res else None
 
 
-def obtener_detalle_alumno(dni):
+def obtener_detalle_alumno(identificador):
+    identificador = identificador.strip().upper()
     conexion = conectar()
     if not conexion:
         return None
@@ -150,12 +367,12 @@ def obtener_detalle_alumno(dni):
     cursor = conexion.cursor()
     cursor.execute(
         """
-        SELECT A.DNI, A.Nombres, A.Apellidos, AU.Nombre_Aula, AU.Fecha_Inicio, AU.Fecha_Fin
+        SELECT A.Codigo_Matricula, A.DNI, A.Nombres, A.Apellidos, AU.Nombre_Aula, AU.Fecha_Inicio, AU.Fecha_Fin
         FROM Alumnos A
         INNER JOIN Aulas AU ON A.ID_Aula = AU.ID_Aula
-        WHERE A.DNI = ?
+        WHERE A.DNI = ? OR A.Codigo_Matricula = ?
         """,
-        (dni,)
+        (identificador, identificador)
     )
     res = cursor.fetchone()
     conexion.close()
@@ -170,7 +387,7 @@ def obtener_alumnos_por_aula(id_aula):
     cursor = conexion.cursor()
     cursor.execute(
         """
-        SELECT DNI, Nombres, Apellidos
+        SELECT Codigo_Matricula, DNI, Nombres, Apellidos
         FROM Alumnos
         WHERE ID_Aula = ?
         ORDER BY Apellidos, Nombres
