@@ -1,3 +1,11 @@
+"""Interfaz grafica del Sistema de Gestion Academica.
+
+La aplicacion usa CustomTkinter para manejar inicio de sesion, matricula,
+edicion de alumnos, carga diaria de notas, gestion de aulas y generacion de
+constancias PDF. La logica de persistencia vive en `database.py` y los reportes
+en `reportes.py`.
+"""
+
 import calendar
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -38,7 +46,7 @@ LOGO_RUTAS = (
     "imagenes/logo.jpeg",
 )
 LOGIN_ESCUDO_RUTA = "assets/login_escudo.png"
-LOGIN_LETRAS_RUTA = "assets/login_letras.png"
+LOGIN_LETRAS_RUTA = "assets/logo_apmipol_recortado.png"
 LOGIN_PERSONAJE_RUTA = "assets/login_personaje.png"
 APP_ICONO_RUTA = "assets/app_personaje.ico"
 LOGO_MAX_ANCHO = 620
@@ -76,7 +84,15 @@ def obtener_directorio_app():
     return Path(__file__).resolve().parent
 
 
+def obtener_directorio_recursos():
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).resolve().parent
+
+
 class App(ctk.CTk):
+    """Ventana principal y controladores de la interfaz del sistema."""
+
     def __init__(self):
         super().__init__()
         self.title(NOMBRE_SISTEMA)
@@ -117,7 +133,7 @@ class App(ctk.CTk):
         ctk.CTkButton(self.frame_login, text="Ingresar", command=self.iniciar_sesion).pack(pady=20)
 
     def configurar_icono_ventana(self):
-        icono = obtener_directorio_app() / APP_ICONO_RUTA
+        icono = obtener_directorio_recursos() / APP_ICONO_RUTA
         if icono.exists():
             try:
                 self.iconbitmap(str(icono))
@@ -152,9 +168,9 @@ class App(ctk.CTk):
             return False
 
         rutas = [
-            obtener_directorio_app() / LOGIN_ESCUDO_RUTA,
-            obtener_directorio_app() / LOGIN_LETRAS_RUTA,
-            obtener_directorio_app() / LOGIN_PERSONAJE_RUTA,
+            obtener_directorio_recursos() / LOGIN_ESCUDO_RUTA,
+            obtener_directorio_recursos() / LOGIN_LETRAS_RUTA,
+            obtener_directorio_recursos() / LOGIN_PERSONAJE_RUTA,
         ]
         if not all(ruta.exists() for ruta in rutas):
             return False
@@ -185,8 +201,8 @@ class App(ctk.CTk):
         return True
 
     def obtener_ruta_logo(self):
-        directorio_app = obtener_directorio_app()
-        return next((directorio_app / ruta for ruta in LOGO_RUTAS if (directorio_app / ruta).exists()), None)
+        directorio_recursos = obtener_directorio_recursos()
+        return next((directorio_recursos / ruta for ruta in LOGO_RUTAS if (directorio_recursos / ruta).exists()), None)
 
     def calcular_tamano_logo(self, tamano_original, max_ancho=LOGO_MAX_ANCHO, max_alto=LOGO_MAX_ALTO):
         ancho_original, alto_original = tamano_original

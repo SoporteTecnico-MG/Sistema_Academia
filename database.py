@@ -1,16 +1,34 @@
+"""Capa de acceso a datos del Sistema de Gestion Academica.
+
+Este modulo concentra la conexion SQLite, la creacion/actualizacion del
+esquema y todas las consultas usadas por la interfaz y los reportes. Las
+funciones devuelven datos simples o tuplas `(exito, mensaje)` para que la UI
+pueda mostrar respuestas claras al usuario.
+"""
+
 import sqlite3
 import sys
+import shutil
 from datetime import date
 from pathlib import Path
 
 
 def obtener_directorio_app():
+    """Devuelve la carpeta donde debe vivir la base de datos editable."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent
 
 
+def obtener_directorio_recursos():
+    """Devuelve la carpeta donde PyInstaller deja la base inicial incluida."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).resolve().parent
+
+
 ARCHIVO_DB = obtener_directorio_app() / "datos_academia.db"
+ARCHIVO_DB_INICIAL = obtener_directorio_recursos() / "datos_academia.db"
 CURSOS_OFICIALES = [
     ("LEX", "LEXICON"),
     ("CG", "CULTURA GENERAL"),
@@ -23,8 +41,21 @@ USUARIOS_INICIALES = [
 ]
 
 
-def conectar():
+def preparar_base_datos_portable():
+    """Copia la base incluida al lado del ejecutable cuando aun no existe."""
+    if ARCHIVO_DB.exists() or ARCHIVO_DB == ARCHIVO_DB_INICIAL or not ARCHIVO_DB_INICIAL.exists():
+        return
+
     try:
+        shutil.copy2(ARCHIVO_DB_INICIAL, ARCHIVO_DB)
+    except Exception as e:
+        print(f"No se pudo preparar la base de datos portable: {e}")
+
+
+def conectar():
+    """Abre una conexion SQLite hacia `datos_academia.db`."""
+    try:
+        preparar_base_datos_portable()
         conexion = sqlite3.connect(ARCHIVO_DB)
         return conexion
     except Exception as e:
@@ -33,6 +64,7 @@ def conectar():
 
 
 def inicializar_base_datos():
+    """Crea las tablas base, usuarios iniciales, cursos y migraciones minimas."""
     conexion = conectar()
     if not conexion:
         return
@@ -72,11 +104,13 @@ def inicializar_base_datos():
 
 
 def sincronizar_cursos(cursor):
+    """Mantiene la tabla Cursos alineada con los cursos oficiales del sistema."""
     cursor.execute("DELETE FROM Cursos")
     cursor.executemany("INSERT INTO Cursos VALUES (?, ?)", CURSOS_OFICIALES)
 
 
 def asegurar_codigo_matricula(cursor):
+    """Agrega y completa el codigo de matricula si la base viene de una version anterior."""
     columnas = [columna[1] for columna in cursor.execute("PRAGMA table_info(Alumnos)").fetchall()]
     if "Codigo_Matricula" not in columnas:
         cursor.execute("ALTER TABLE Alumnos ADD COLUMN Codigo_Matricula TEXT")
@@ -102,6 +136,7 @@ def asegurar_codigo_matricula(cursor):
 
 
 def normalizar_codigos_matricula(cursor):
+    """Convierte codigos antiguos o invalidos al formato numerico de seis digitos."""
     registros = cursor.execute(
         """
         SELECT rowid
@@ -121,6 +156,7 @@ def normalizar_codigos_matricula(cursor):
 
 
 def obtener_siguiente_codigo_matricula(cursor=None):
+    """Calcula el siguiente codigo de matricula disponible con seis digitos."""
     cerrar_conexion = False
     if cursor is None:
         conexion = conectar()
@@ -172,6 +208,7 @@ def crear_aula(nombre, f_inicio, f_fin):
 
 
 def obtener_aulas_activas():
+    """Lista las aulas disponibles para matricula, notas y reportes."""
     conexion = conectar()
     if not conexion:
         return []
@@ -185,6 +222,7 @@ def obtener_aulas_activas():
 
 
 def validar_login(usuario, password):
+    """Valida credenciales y devuelve nombre completo y rol del usuario."""
     conexion = conectar()
     if not conexion:
         return False, "", ""
@@ -203,6 +241,7 @@ def validar_login(usuario, password):
 
 
 def insertar_alumno(codigo_matricula, dni, nom, ape, tel, id_aula, user):
+    """Registra un nuevo alumno en un aula activa."""
     codigo_matricula = codigo_matricula.strip().upper()
     dni = dni.strip()
     conexion = conectar()
@@ -342,6 +381,7 @@ def eliminar_alumno(dni):
 
 
 def buscar_alumno_con_aula(dni):
+    """Devuelve un texto corto con alumno y aula a partir del DNI."""
     conexion = conectar()
     cursor = conexion.cursor()
     cursor.execute(
@@ -359,6 +399,7 @@ def buscar_alumno_con_aula(dni):
 
 
 def obtener_detalle_alumno(identificador):
+    """Busca datos completos del alumno por DNI o codigo de matricula."""
     identificador = identificador.strip().upper()
     conexion = conectar()
     if not conexion:
@@ -380,6 +421,7 @@ def obtener_detalle_alumno(identificador):
 
 
 def obtener_alumnos_por_aula(id_aula):
+    """Obtiene los alumnos de un aula ordenados para carga masiva de notas."""
     conexion = conectar()
     if not conexion:
         return []
@@ -400,6 +442,7 @@ def obtener_alumnos_por_aula(id_aula):
 
 
 def obtener_cursos():
+    """Devuelve los cursos oficiales en el orden registrado."""
     conexion = conectar()
     res = conexion.execute("SELECT * FROM Cursos ORDER BY rowid").fetchall()
     conexion.close()
@@ -407,6 +450,7 @@ def obtener_cursos():
 
 
 def obtener_evaluaciones_por_aula_fecha(id_aula, fecha_eval):
+    """Trae las notas ya guardadas de un aula en una fecha especifica."""
     conexion = conectar()
     if not conexion:
         return {}
@@ -427,6 +471,7 @@ def obtener_evaluaciones_por_aula_fecha(id_aula, fecha_eval):
 
 
 def registrar_evaluacion(dni, id_c, nota, est, user, fecha_eval=None):
+    """Inserta o actualiza la nota diaria de un alumno para un curso."""
     conexion = conectar()
     try:
         f = fecha_eval or date.today().strftime("%Y-%m-%d")
@@ -452,6 +497,7 @@ def registrar_evaluacion(dni, id_c, nota, est, user, fecha_eval=None):
 
 
 def obtener_historial_notas(dni):
+    """Devuelve todo el historial de evaluaciones de un alumno."""
     conexion = conectar()
     res = conexion.execute(
         """
