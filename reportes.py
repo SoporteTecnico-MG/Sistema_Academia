@@ -5,6 +5,7 @@ fecha y construye una constancia A4 vertical con membrete institucional, datos
 del alumno, fecha/hora de emision y tablas compactas en dos columnas.
 """
 
+import io
 import os
 import re
 import sys
@@ -12,6 +13,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from PIL import Image as ImagenPIL
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -55,11 +57,13 @@ def generar_consolidado_pdf(identificador):
     """Genera y abre la constancia PDF para un alumno buscado por DNI o codigo."""
     detalle = database.obtener_detalle_alumno(identificador)
 
+    if detalle == "AMBIGUO":
+        return False, "Ese DNI tiene varias matriculas registradas. Ingrese el codigo de matricula exacto."
     if not detalle:
         return False, "Alumno no encontrado en los registros."
 
-    codigo_matricula, dni = detalle[0], detalle[1]
-    historial = database.obtener_historial_notas(dni)
+    codigo_matricula = detalle[0]
+    historial = database.obtener_historial_notas(codigo_matricula)
 
     nombre_archivo = obtener_directorio_app() / f"Constancia_Notas_{sanitizar_nombre_archivo(codigo_matricula)}.pdf"
     ruta_pdf = str(nombre_archivo)
@@ -185,16 +189,21 @@ def crear_encabezado(detalle, historial, styles):
 
 
 def crear_banner_logos():
-    """Crea el banner con escudo, logo APMIPOL y personaje institucional."""
+    """Crea el banner con personaje, logo APMIPOL y escudo institucional.
+
+    El orden (personaje-letras-escudo) replica el banner de la aplicacion. El
+    personaje mira hacia su izquierda en el archivo original, asi que aqui se
+    refleja horizontalmente para que quede mirando hacia el centro del banner.
+    """
     directorio_recursos = obtener_directorio_recursos()
     rutas = [directorio_recursos / ruta for ruta in LOGOS_REPORTE]
     if not all(ruta.exists() for ruta in rutas):
         return None
 
     imagenes = [
-        crear_imagen_ajustada(rutas[2], max_ancho=100, max_alto=86),
+        crear_imagen_ajustada(rutas[0], max_ancho=100, max_alto=86, espejo=True),
         crear_imagen_ajustada(rutas[1], max_ancho=410, max_alto=108),
-        crear_imagen_ajustada(rutas[0], max_ancho=100, max_alto=86),
+        crear_imagen_ajustada(rutas[2], max_ancho=100, max_alto=86),
     ]
     tabla = Table([imagenes], colWidths=[75, 410, 65], hAlign="CENTER")
     tabla.setStyle(TableStyle([
@@ -208,12 +217,26 @@ def crear_banner_logos():
     return tabla
 
 
-def crear_imagen_ajustada(ruta, max_ancho, max_alto):
-    """Escala una imagen manteniendo su proporcion dentro de un tamano maximo."""
+def crear_imagen_ajustada(ruta, max_ancho, max_alto, espejo=False):
+    """Escala una imagen manteniendo su proporcion dentro de un tamano maximo.
+
+    Con `espejo=True` la imagen se refleja horizontalmente antes de escalarla
+    (util para que un personaje que mira hacia un lado quede mirando hacia el
+    centro del layout al cambiar de posicion).
+    """
     lector = ImageReader(str(ruta))
     ancho_original, alto_original = lector.getSize()
     escala = min(max_ancho / ancho_original, max_alto / alto_original)
-    return Image(str(ruta), width=ancho_original * escala, height=alto_original * escala)
+    ancho, alto = ancho_original * escala, alto_original * escala
+
+    if not espejo:
+        return Image(str(ruta), width=ancho, height=alto)
+
+    imagen_reflejada = ImagenPIL.open(ruta).transpose(ImagenPIL.FLIP_LEFT_RIGHT)
+    buffer = io.BytesIO()
+    imagen_reflejada.save(buffer, format="PNG")
+    buffer.seek(0)
+    return Image(buffer, width=ancho, height=alto)
 
 
 def crear_bloque_firma(styles):

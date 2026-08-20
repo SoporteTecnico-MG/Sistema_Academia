@@ -7,9 +7,10 @@ en `reportes.py`.
 """
 
 import calendar
+import tkinter as tk
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 import os
 import sys
 
@@ -20,6 +21,7 @@ if getattr(sys, "frozen", False):
 
 import customtkinter as ctk
 import database
+import excel_io
 import reportes
 
 try:
@@ -56,8 +58,16 @@ LOGO_PANEL_MAX_ALTO = 115
 NOTAS_ANCHO_CODIGO = 92
 NOTAS_ANCHO_DNI = 92
 NOTAS_ANCHO_ESTUDIANTE = 190
-NOTAS_ANCHO_CURSO = 116
+NOTAS_ANCHO_NOTA = 64
+NOTAS_ANCHO_NSP = 60
 NOTAS_ALTO_FILA = 42
+NOTAS_FONT_FILA = ("Roboto", 11)
+NOTAS_COLOR_TEXTO = "#dce4ee"
+NOTAS_COLOR_TEXTO_DESHABILITADO = "#9a9a9a"
+NOTAS_COLOR_ENTRADA_BG = "#343638"
+NOTAS_COLOR_BORDE = "#565b5e"
+NOTAS_COLOR_ACENTO = "#1f6aa5"
+MAX_RESULTADOS_EDICION = 50
 NOTA_MINIMA_DEFAULT = "0"
 NOTA_MAXIMA_DEFAULT = "20"
 NOTA_APROBATORIA_DEFAULT = "11"
@@ -109,6 +119,7 @@ class App(ctk.CTk):
         self.logo_panel_escudo = None
         self.logo_panel_letras = None
         self.logo_panel_personaje = None
+        self._banner_cache = {}
 
         self.frame_login = ctk.CTkFrame(self)
         self.frame_login.pack(pady=90, padx=160, fill="both", expand=True)
@@ -163,9 +174,16 @@ class App(ctk.CTk):
     def mostrar_banner_login(self):
         return self.mostrar_banner_institucional(self.frame_login, (150, 145), (430, 135), pady=(20, 8))
 
-    def mostrar_banner_institucional(self, padre, tamano_lateral, tamano_letras, pady=(20, 8)):
-        if not Image:
-            return False
+    def obtener_imagenes_banner(self, tamano_lateral, tamano_letras):
+        """Carga y escala el escudo/letras/personaje una sola vez por tamano solicitado.
+
+        Antes se releian y reescalaban las 3 imagenes desde disco cada vez que se
+        cambiaba de panel (Matricula, Notas, Reportes, Aulas); con el cache solo
+        se hace una vez por combinacion de tamanos (login y panel).
+        """
+        clave = (tamano_lateral, tamano_letras)
+        if clave in self._banner_cache:
+            return self._banner_cache[clave]
 
         rutas = [
             obtener_directorio_recursos() / LOGIN_ESCUDO_RUTA,
@@ -173,18 +191,31 @@ class App(ctk.CTk):
             obtener_directorio_recursos() / LOGIN_PERSONAJE_RUTA,
         ]
         if not all(ruta.exists() for ruta in rutas):
-            return False
-
-        banner = ctk.CTkFrame(padre, fg_color="transparent")
-        banner.pack(pady=pady)
+            return None
 
         escudo = Image.open(rutas[0])
         letras = Image.open(rutas[1])
         personaje = Image.open(rutas[2])
 
-        imagen_escudo = ctk.CTkImage(escudo, size=self.calcular_tamano_logo(escudo.size, *tamano_lateral))
-        imagen_letras = ctk.CTkImage(letras, size=self.calcular_tamano_logo(letras.size, *tamano_letras))
-        imagen_personaje = ctk.CTkImage(personaje, size=self.calcular_tamano_logo(personaje.size, *tamano_lateral))
+        imagenes = (
+            ctk.CTkImage(escudo, size=self.calcular_tamano_logo(escudo.size, *tamano_lateral)),
+            ctk.CTkImage(letras, size=self.calcular_tamano_logo(letras.size, *tamano_letras)),
+            ctk.CTkImage(personaje, size=self.calcular_tamano_logo(personaje.size, *tamano_lateral)),
+        )
+        self._banner_cache[clave] = imagenes
+        return imagenes
+
+    def mostrar_banner_institucional(self, padre, tamano_lateral, tamano_letras, pady=(20, 8)):
+        if not Image:
+            return False
+
+        imagenes = self.obtener_imagenes_banner(tamano_lateral, tamano_letras)
+        if imagenes is None:
+            return False
+        imagen_escudo, imagen_letras, imagen_personaje = imagenes
+
+        banner = ctk.CTkFrame(padre, fg_color="transparent")
+        banner.pack(pady=pady)
 
         if padre == self.frame_login:
             self.logo_login_escudo = imagen_escudo
@@ -263,6 +294,11 @@ class App(ctk.CTk):
         ctk.CTkButton(self.sidebar, text="4. Reportes PDF", command=self.mostrar_reportes).pack(
             pady=10, padx=20, fill="x"
         )
+
+        if self.rol_actual == "Admin":
+            ctk.CTkButton(
+                self.sidebar, text="5. Importar/Exportar Excel", command=self.mostrar_excel
+            ).pack(pady=10, padx=20, fill="x")
 
         if self.rol_actual == "Admin":
             ctk.CTkButton(
@@ -598,7 +634,7 @@ class App(ctk.CTk):
         formulario = ctk.CTkFrame(area_edicion, fg_color="transparent")
         formulario.pack(pady=8)
 
-        self.edit_dni_original = ""
+        self.edit_codigo_original = ""
         self.e_edit_codigo = self.crear_fila_formulario(formulario, "Codigo de matricula", 0, ancho=360)
         self.e_edit_dni = self.crear_fila_formulario(formulario, "DNI", 1, ancho=360)
         self.e_edit_nom = self.crear_fila_formulario(formulario, "Nombres", 2, ancho=360)
@@ -640,29 +676,43 @@ class App(ctk.CTk):
         self.lbl_edit_estudiante.pack(pady=4)
 
         if alumnos:
-            self.seleccionar_estudiante_edicion(alumnos[0][1])
+            self.seleccionar_estudiante_edicion(alumnos[0][0])
 
     def actualizar_lista_estudiantes_edicion(self, alumnos):
+        # Con miles de estudiantes acumulados (varios ciclos x varias aulas x anio),
+        # crear un boton por cada resultado sin filtrar volveria a ser tan lento
+        # como la grilla de notas. Se limita cuantos botones se crean de una vez y
+        # se pide afinar la busqueda cuando hay mas resultados que el limite.
         self.dict_estudiantes_edicion = {
-            f"{alumno[3]}, {alumno[2]} | {alumno[1]} | {alumno[0]}": alumno[1]
+            f"{alumno[3]}, {alumno[2]} | {alumno[1]} | {alumno[0]}": alumno[0]
             for alumno in alumnos
         }
         for widget in self.resultados_estudiantes_frame.winfo_children():
             widget.destroy()
 
         if not alumnos:
-            ctk.CTkLabel(self.resultados_estudiantes_frame, text="No hay estudiantes").pack(anchor="w", padx=8, pady=6)
+            ctk.CTkLabel(self.resultados_estudiantes_frame, text="No hay estudiantes").pack(
+                anchor="w", padx=8, pady=6
+            )
             return
 
-        for alumno in alumnos:
+        for alumno in alumnos[:MAX_RESULTADOS_EDICION]:
             texto = f"{alumno[3]}, {alumno[2]} | DNI {alumno[1]} | Cod. {alumno[0]}"
             ctk.CTkButton(
                 self.resultados_estudiantes_frame,
                 text=texto,
                 anchor="w",
                 fg_color="#3a3a3a",
-                command=lambda dni=alumno[1]: self.seleccionar_estudiante_edicion(dni)
+                command=lambda codigo=alumno[0]: self.seleccionar_estudiante_edicion(codigo)
             ).pack(fill="x", padx=4, pady=2)
+
+        restantes = len(alumnos) - MAX_RESULTADOS_EDICION
+        if restantes > 0:
+            ctk.CTkLabel(
+                self.resultados_estudiantes_frame,
+                text=f"... y {restantes} estudiante(s) mas. Afine la busqueda para verlos.",
+                text_color="gray"
+            ).pack(anchor="w", padx=8, pady=4)
 
     def filtrar_estudiantes_edicion(self):
         apellido_paterno = self.e_bus_ap_pat.get().strip().upper()
@@ -683,10 +733,10 @@ class App(ctk.CTk):
 
         self.actualizar_lista_estudiantes_edicion(filtrados)
         if filtrados:
-            self.seleccionar_estudiante_edicion(filtrados[0][1])
+            self.seleccionar_estudiante_edicion(filtrados[0][0])
             self.lbl_edit_estudiante.configure(text=f"{len(filtrados)} estudiante(s) encontrado(s).", text_color="gray")
         else:
-            self.edit_dni_original = ""
+            self.edit_codigo_original = ""
             self.lbl_edit_estudiante.configure(text="No se encontraron estudiantes con esos datos.", text_color="red")
 
     def limpiar_busqueda_estudiantes(self):
@@ -694,21 +744,21 @@ class App(ctk.CTk):
             entrada.delete(0, "end")
         self.actualizar_lista_estudiantes_edicion(self.alumnos_edicion)
         if self.alumnos_edicion:
-            self.seleccionar_estudiante_edicion(self.alumnos_edicion[0][1])
+            self.seleccionar_estudiante_edicion(self.alumnos_edicion[0][0])
 
-    def seleccionar_estudiante_edicion(self, dni=None):
-        dni = dni or self.edit_dni_original
-        if not dni:
+    def seleccionar_estudiante_edicion(self, codigo_matricula=None):
+        codigo_matricula = codigo_matricula or self.edit_codigo_original
+        if not codigo_matricula:
             self.lbl_edit_estudiante.configure(text="Seleccione un estudiante valido.", text_color="red")
             return
 
-        alumno = database.obtener_alumno_por_dni(dni)
+        alumno = database.obtener_alumno_por_codigo(codigo_matricula)
         if not alumno:
             self.lbl_edit_estudiante.configure(text="No se encontraron datos para el estudiante.", text_color="red")
             return
 
         codigo, dni_actual, nombres, apellidos, telefono, id_aula = alumno
-        self.edit_dni_original = dni_actual
+        self.edit_codigo_original = codigo
         for entry, valor in (
             (self.e_edit_codigo, codigo),
             (self.e_edit_dni, dni_actual),
@@ -725,7 +775,7 @@ class App(ctk.CTk):
         self.lbl_edit_estudiante.configure(text="Datos cargados para edicion.", text_color="gray")
 
     def guardar_edicion_estudiante_ui(self):
-        if not self.edit_dni_original:
+        if not self.edit_codigo_original:
             self.lbl_edit_estudiante.configure(text="Primero seleccione un estudiante.", text_color="red")
             return
 
@@ -744,7 +794,7 @@ class App(ctk.CTk):
             return
 
         exito, msj = database.actualizar_alumno(
-            self.edit_dni_original,
+            self.edit_codigo_original,
             codigo,
             dni,
             nombres,
@@ -758,12 +808,12 @@ class App(ctk.CTk):
             self.mostrar_mensaje(self.lbl_edit_estudiante, msj, "green", limpiar=True)
 
     def eliminar_estudiante_ui(self):
-        dni = self.edit_dni_original
-        if not dni:
+        codigo_matricula = self.edit_codigo_original
+        if not codigo_matricula:
             self.lbl_edit_estudiante.configure(text="Seleccione un estudiante valido.", text_color="red")
             return
 
-        seleccion = f"{self.e_edit_ape.get().strip()}, {self.e_edit_nom.get().strip()} | {dni}"
+        seleccion = f"{self.e_edit_ape.get().strip()}, {self.e_edit_nom.get().strip()} | {codigo_matricula}"
 
         confirmar = messagebox.askyesno(
             "Eliminar estudiante",
@@ -772,7 +822,7 @@ class App(ctk.CTk):
         if not confirmar:
             return
 
-        exito, msj = database.eliminar_alumno(dni)
+        exito, msj = database.eliminar_alumno(codigo_matricula)
         self.mostrar_mensaje(self.lbl_edit_estudiante, msj, "green" if exito else "red", limpiar=exito)
         if exito:
             self.mostrar_edicion_estudiantes()
@@ -815,6 +865,8 @@ class App(ctk.CTk):
 
         self.contenedor_notas = ctk.CTkScrollableFrame(self.panel_central, height=310)
         self.contenedor_notas.pack(fill="both", expand=True, pady=8)
+        self._widgets_filas_notas = []
+        self.crear_encabezado_notas()
 
         self.btn_guardar_notas_aula = ctk.CTkButton(
             self.panel_central,
@@ -827,8 +879,9 @@ class App(ctk.CTk):
         self.lbl_res.pack()
 
     def cargar_alumnos_aula(self):
-        for widget in self.contenedor_notas.winfo_children():
+        for widget in self._widgets_filas_notas:
             widget.destroy()
+        self._widgets_filas_notas = []
         self.filas_notas = []
 
         if not self.cursos_notas:
@@ -852,10 +905,23 @@ class App(ctk.CTk):
 
         self.evaluaciones_fecha = database.obtener_evaluaciones_por_aula_fecha(id_aula, fecha_eval)
         self.lbl_res.configure(text=f"{len(alumnos)} estudiantes cargados para {fecha_eval}.", text_color="gray")
-        self.crear_encabezado_notas()
 
-        for fila, alumno in enumerate(alumnos, start=1):
-            self.crear_fila_notas(fila, alumno)
+        # Se oculta el contenedor mientras se insertan todas las filas para que el
+        # scroll no recalcule su area en cada widget agregado; con aulas de varias
+        # decenas de alumnos eso era lo que hacia notoriamente lenta la carga.
+        color_fondo = self.obtener_color_fondo_notas()
+        self.contenedor_notas.pack_forget()
+        try:
+            for fila, alumno in enumerate(alumnos, start=1):
+                self.crear_fila_notas(fila, alumno, color_fondo)
+        finally:
+            self.contenedor_notas.pack(fill="both", expand=True, pady=8, before=self.btn_guardar_notas_aula)
+
+    def obtener_color_fondo_notas(self):
+        try:
+            return self.contenedor_notas._parent_canvas.cget("bg")
+        except Exception:
+            return "#2b2b2b"
 
     def obtener_fecha_notas(self):
         fecha_texto = self.ent_fecha_notas.get().strip()
@@ -918,67 +984,79 @@ class App(ctk.CTk):
             row=0, column=2, padx=3, pady=(4, 8), sticky="ew"
         )
 
-        for col, (_, nombre_curso) in enumerate(self.cursos_notas, start=3):
-            self.contenedor_notas.grid_columnconfigure(col, minsize=NOTAS_ANCHO_CURSO)
+        for indice, (_, nombre_curso) in enumerate(self.cursos_notas):
+            col_nota = 3 + indice * 2
+            col_nsp = col_nota + 1
+            self.contenedor_notas.grid_columnconfigure(col_nota, minsize=NOTAS_ANCHO_NOTA)
+            self.contenedor_notas.grid_columnconfigure(col_nsp, minsize=NOTAS_ANCHO_NSP)
             ctk.CTkLabel(
                 self.contenedor_notas,
                 text=nombre_curso,
-                width=NOTAS_ANCHO_CURSO,
                 height=42,
                 font=("Roboto", 12, "bold"),
-                wraplength=NOTAS_ANCHO_CURSO - 8,
+                wraplength=NOTAS_ANCHO_NOTA + NOTAS_ANCHO_NSP - 8,
                 justify="center"
-            ).grid(row=0, column=col, padx=3, pady=(4, 8), sticky="ew")
+            ).grid(row=0, column=col_nota, columnspan=2, padx=3, pady=(4, 8), sticky="ew")
 
-    def crear_fila_notas(self, fila, alumno):
+    def crear_fila_notas(self, fila, alumno, color_fondo):
+        # Las celdas de datos usan widgets Tkinter simples (no CustomTkinter): cada
+        # CTkEntry/CTkCheckBox registra seguimiento de escalado/tema al crearse, y con
+        # decenas de alumnos x 4 cursos esa sobrecarga por widget era la causa real de
+        # la lentitud al cargar un aula (no el contenedor ni las consultas a la base).
         codigo_matricula, dni, nombres, apellidos = alumno
         estudiante = f"{apellidos}, {nombres}"
-        ctk.CTkLabel(
-            self.contenedor_notas,
-            text=codigo_matricula,
-            width=NOTAS_ANCHO_CODIGO,
-            height=NOTAS_ALTO_FILA,
-            anchor="w",
-            justify="left"
-        ).grid(row=fila, column=0, padx=3, pady=3, sticky="ew")
-        ctk.CTkLabel(
-            self.contenedor_notas,
-            text=dni,
-            width=NOTAS_ANCHO_DNI,
-            height=NOTAS_ALTO_FILA,
-            anchor="w",
-            justify="left"
-        ).grid(row=fila, column=1, padx=3, pady=3, sticky="ew")
-        ctk.CTkLabel(
-            self.contenedor_notas,
-            text=estudiante,
-            width=NOTAS_ANCHO_ESTUDIANTE,
-            height=NOTAS_ALTO_FILA,
-            anchor="w",
-            wraplength=NOTAS_ANCHO_ESTUDIANTE - 8
-        ).grid(row=fila, column=2, padx=3, pady=3, sticky="ew")
+        widgets_fila = []
+
+        kwargs_label = dict(bg=color_fondo, fg=NOTAS_COLOR_TEXTO, font=NOTAS_FONT_FILA, anchor="w")
+        lbl_codigo = tk.Label(self.contenedor_notas, text=codigo_matricula, **kwargs_label)
+        lbl_codigo.grid(row=fila, column=0, padx=3, pady=3, sticky="ew")
+        lbl_dni = tk.Label(self.contenedor_notas, text=dni, **kwargs_label)
+        lbl_dni.grid(row=fila, column=1, padx=3, pady=3, sticky="ew")
+        lbl_estudiante = tk.Label(self.contenedor_notas, text=estudiante, **kwargs_label)
+        lbl_estudiante.grid(row=fila, column=2, padx=3, pady=3, sticky="ew")
+        widgets_fila.extend((lbl_codigo, lbl_dni, lbl_estudiante))
 
         fila_cursos = []
-        for col, (id_curso, _) in enumerate(self.cursos_notas, start=3):
-            celda = ctk.CTkFrame(self.contenedor_notas, fg_color="transparent")
-            celda.configure(width=NOTAS_ANCHO_CURSO, height=NOTAS_ALTO_FILA)
-            celda.grid(row=fila, column=col, padx=3, pady=3, sticky="nsew")
-            celda.grid_propagate(False)
+        for indice, (id_curso, _) in enumerate(self.cursos_notas):
+            col_nota = 3 + indice * 2
+            col_nsp = col_nota + 1
 
-            entrada = ctk.CTkEntry(celda, placeholder_text="0-20", width=54, justify="center")
-            entrada.grid(row=0, column=0, padx=(0, 4), pady=0, sticky="w")
+            entrada = tk.Entry(
+                self.contenedor_notas,
+                width=6,
+                justify="center",
+                font=NOTAS_FONT_FILA,
+                bg=NOTAS_COLOR_ENTRADA_BG,
+                fg=NOTAS_COLOR_TEXTO,
+                insertbackground=NOTAS_COLOR_TEXTO,
+                disabledbackground=NOTAS_COLOR_ENTRADA_BG,
+                disabledforeground=NOTAS_COLOR_TEXTO_DESHABILITADO,
+                relief="flat",
+                highlightthickness=1,
+                highlightbackground=NOTAS_COLOR_BORDE,
+                highlightcolor=NOTAS_COLOR_ACENTO
+            )
+            entrada.grid(row=fila, column=col_nota, padx=(3, 1), pady=3, sticky="w")
 
-            nsp_var = ctk.BooleanVar(value=False)
-            chk_nsp = ctk.CTkCheckBox(
-                celda,
+            nsp_var = tk.BooleanVar(value=False)
+            chk_nsp = tk.Checkbutton(
+                self.contenedor_notas,
                 text="NSP",
-                width=56,
+                font=NOTAS_FONT_FILA,
                 variable=nsp_var,
+                bg=color_fondo,
+                fg=NOTAS_COLOR_TEXTO,
+                activebackground=color_fondo,
+                activeforeground=NOTAS_COLOR_TEXTO,
+                selectcolor=NOTAS_COLOR_ENTRADA_BG,
+                highlightthickness=0,
+                bd=0,
                 command=lambda e=entrada, v=nsp_var: self.actualizar_estado_nsp(e, v)
             )
-            chk_nsp.grid(row=0, column=1, padx=0, pady=0, sticky="w")
+            chk_nsp.grid(row=fila, column=col_nsp, padx=(1, 3), pady=3, sticky="w")
+            widgets_fila.extend((entrada, chk_nsp))
 
-            registro_existente = self.evaluaciones_fecha.get((dni, id_curso))
+            registro_existente = self.evaluaciones_fecha.get((codigo_matricula, id_curso))
             if registro_existente:
                 nota, estado = registro_existente
                 if estado == "NSP":
@@ -989,93 +1067,67 @@ class App(ctk.CTk):
 
             fila_cursos.append((id_curso, entrada, nsp_var))
 
-        self.filas_notas.append((dni, fila_cursos))
+        self.filas_notas.append((codigo_matricula, fila_cursos))
+        self._widgets_filas_notas.extend(widgets_fila)
 
     def actualizar_estado_nsp(self, entrada, nsp_var):
+        entrada.configure(state="normal")
+        entrada.delete(0, "end")
         if nsp_var.get():
-            entrada.delete(0, "end")
-            entrada.configure(state="disabled", placeholder_text="NSP")
-        else:
-            entrada.configure(state="normal", placeholder_text="0-20")
+            entrada.insert(0, "NSP")
+            entrada.configure(state="disabled")
 
     def guardar_notas_aula(self):
         if not self.filas_notas:
             self.lbl_res.configure(text="Cargue un aula antes de guardar.", text_color="red")
             return
 
+        fecha_eval = self.obtener_fecha_notas()
+        if not fecha_eval:
+            return
+
+        nota_minima, nota_maxima, _ = self.obtener_parametros_notas()
+
+        registros = []
+        for codigo_matricula, cursos in self.filas_notas:
+            for id_curso, entrada, nsp_var in cursos:
+                nota = "" if nsp_var.get() else entrada.get().strip().replace(",", ".")
+                estado = "NSP" if nsp_var.get() else ("PENDIENTE" if nota == "" else "OK")
+
+                if estado == "OK":
+                    try:
+                        nota_numero = float(nota)
+                        if nota_numero < nota_minima or nota_numero > nota_maxima:
+                            raise ValueError
+                    except ValueError:
+                        self.lbl_res.configure(
+                            text=(
+                                f"Revise la nota del codigo {codigo_matricula}. "
+                                f"Ingrese {nota_minima:g} a {nota_maxima:g}, o deje vacio para guion."
+                            ),
+                            text_color="red"
+                        )
+                        return
+
+                registros.append((codigo_matricula, id_curso, nota, estado))
+
         self.btn_guardar_notas_aula.configure(state="disabled", text="Guardando...")
         self.update_idletasks()
         try:
-            registros_guardados = 0
-            total_estudiantes = len(self.filas_notas)
-            for indice, (dni, cursos) in enumerate(self.filas_notas, start=1):
-                self.lbl_res.configure(
-                    text=f"Guardando estudiante {indice} de {total_estudiantes}...",
-                    text_color="gray"
-                )
-                self.update_idletasks()
-                guardados = self.guardar_cursos_estudiante(dni, cursos, mostrar_mensaje=False)
-                if guardados is None:
-                    return
-                registros_guardados += guardados
-
-            self.mostrar_mensaje(
-                self.lbl_res,
-                f"Guardado completo: {total_estudiantes} estudiantes y {registros_guardados} notas.",
-                "green",
-                limpiar=True
+            exito, cantidad, msj = database.registrar_evaluaciones_lote(
+                registros, self.usuario_actual, fecha_eval=fecha_eval
             )
+            if exito:
+                self.mostrar_mensaje(
+                    self.lbl_res,
+                    f"Guardado completo: {len(self.filas_notas)} estudiantes y {cantidad} notas.",
+                    "green",
+                    limpiar=True
+                )
+            else:
+                self.lbl_res.configure(text=f"Error al guardar las notas: {msj}", text_color="red")
         finally:
             self.btn_guardar_notas_aula.configure(state="normal", text="Guardar Notas del Aula")
-
-    def guardar_cursos_estudiante(self, dni, cursos, mostrar_mensaje=True):
-        fecha_eval = self.obtener_fecha_notas()
-        if not fecha_eval:
-            return None
-
-        parametros = self.obtener_parametros_notas()
-        if not parametros:
-            return None
-        nota_minima, nota_maxima, _ = parametros
-
-        registros_guardados = 0
-        for id_curso, entrada, nsp_var in cursos:
-            nota = "" if nsp_var.get() else entrada.get().strip().replace(",", ".")
-            estado = "NSP" if nsp_var.get() else ("PENDIENTE" if nota == "" else "OK")
-
-            if estado == "OK":
-                try:
-                    nota_numero = float(nota)
-                    if nota_numero < nota_minima or nota_numero > nota_maxima:
-                        raise ValueError
-                except ValueError:
-                    self.lbl_res.configure(
-                        text=f"Revise la nota de DNI {dni}. Ingrese {nota_minima:g} a {nota_maxima:g}, o deje vacio para guion.",
-                        text_color="red"
-                    )
-                    return None
-
-            exito, msj = database.registrar_evaluacion(
-                dni,
-                id_curso,
-                nota,
-                estado,
-                self.usuario_actual,
-                fecha_eval=fecha_eval
-            )
-            if not exito:
-                self.lbl_res.configure(text=f"DNI {dni}: {msj}", text_color="red")
-                return None
-            registros_guardados += 1
-
-        if mostrar_mensaje:
-            self.mostrar_mensaje(
-                self.lbl_res,
-                f"DNI {dni}: {registros_guardados} notas guardadas.",
-                "green",
-                limpiar=True
-            )
-        return registros_guardados
 
     def obtener_parametros_notas(self):
         return (
@@ -1097,6 +1149,98 @@ class App(ctk.CTk):
     def pdf_ui(self):
         exito, msj = reportes.generar_consolidado_pdf(self.e_rep.get())
         self.mostrar_mensaje(self.lbl_p, msj, "green" if exito else "red", limpiar=exito)
+
+    def mostrar_excel(self):
+        self.limpiar_panel()
+        self.mostrar_logo_panel()
+        ctk.CTkLabel(
+            self.panel_central, text="Importar / Exportar Estudiantes (Excel)", font=("Roboto", 22, "bold")
+        ).pack(pady=20)
+
+        bloque_export = ctk.CTkFrame(self.panel_central, fg_color="transparent")
+        bloque_export.pack(pady=(0, 20))
+        ctk.CTkLabel(bloque_export, text="Exportar todos los estudiantes registrados a un archivo Excel.").pack()
+        ctk.CTkButton(
+            bloque_export, text="Exportar a Excel", command=self.exportar_excel_ui, fg_color="green"
+        ).pack(pady=10)
+
+        bloque_import = ctk.CTkFrame(self.panel_central, fg_color="transparent")
+        bloque_import.pack(pady=10)
+        ctk.CTkLabel(
+            bloque_import,
+            text=(
+                "Importar estudiantes desde Excel. Columnas requeridas: DNI, Nombres, Apellidos, Telefono.\n"
+                "Columnas opcionales: Codigo_Matricula (se genera automaticamente si falta) y Aula\n"
+                "(si una fila no trae Aula, se usa la seleccionada abajo)."
+            ),
+            justify="center",
+            wraplength=620
+        ).pack(pady=(0, 10))
+
+        aulas = database.obtener_aulas_activas()
+        self.dict_au_excel = {a[1]: a[0] for a in aulas}
+        ctk.CTkLabel(bloque_import, text="Aula por defecto").pack()
+        self.cb_au_excel = ctk.CTkComboBox(
+            bloque_import,
+            values=list(self.dict_au_excel.keys()) if aulas else ["No hay aulas"],
+            width=300
+        )
+        self.cb_au_excel.pack(pady=(0, 10))
+
+        ctk.CTkButton(
+            bloque_import, text="Seleccionar e Importar Archivo", command=self.importar_excel_ui
+        ).pack(pady=6)
+
+        self.lbl_excel_resumen = ctk.CTkLabel(self.panel_central, text="", justify="center", wraplength=760)
+        self.lbl_excel_resumen.pack(pady=10)
+
+        self.txt_excel_errores = ctk.CTkTextbox(self.panel_central, height=180, width=760)
+        self.txt_excel_errores.pack(pady=(0, 10))
+        self.txt_excel_errores.configure(state="disabled")
+
+    def exportar_excel_ui(self):
+        ruta = filedialog.asksaveasfilename(
+            title="Guardar listado de estudiantes",
+            defaultextension=".xlsx",
+            filetypes=[("Archivo Excel", "*.xlsx")],
+            initialfile="estudiantes.xlsx"
+        )
+        if not ruta:
+            return
+
+        try:
+            exito, msj = excel_io.exportar_alumnos(ruta)
+        except Exception as e:
+            exito, msj = False, f"Error al exportar: {e}"
+        self.mostrar_mensaje(self.lbl_excel_resumen, msj, "green" if exito else "red", limpiar=exito)
+
+    def importar_excel_ui(self):
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar archivo de estudiantes",
+            filetypes=[("Archivo Excel", "*.xlsx")]
+        )
+        if not ruta:
+            return
+
+        aula_defecto = self.cb_au_excel.get()
+        id_aula_defecto = self.dict_au_excel.get(aula_defecto)
+
+        try:
+            insertados, errores = excel_io.importar_alumnos(ruta, id_aula_defecto, self.usuario_actual)
+        except Exception as e:
+            self.mostrar_mensaje(self.lbl_excel_resumen, f"No se pudo leer el archivo: {e}", "red")
+            return
+
+        resumen = f"{insertados} estudiante(s) importado(s)."
+        if errores:
+            resumen += f" {len(errores)} fila(s) con errores."
+        color = "green" if insertados and not errores else ("orange" if insertados else "red")
+        self.mostrar_mensaje(self.lbl_excel_resumen, resumen, color)
+
+        self.txt_excel_errores.configure(state="normal")
+        self.txt_excel_errores.delete("1.0", "end")
+        self.txt_excel_errores.insert("1.0", "\n".join(errores) if errores else "Sin errores.")
+        self.txt_excel_errores.configure(state="disabled")
 
 
 if __name__ == "__main__":

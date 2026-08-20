@@ -6,3 +6,11 @@ build/
 dist/
 tcl_debug/
 *.zip
+
+# Base de datos con informacion real de estudiantes: nunca se sube al repo.
+*.db
+
+# Carpetas de trabajo local que no forman parte del codigo fuente publicado.
+BACKUP/
+Sistema_Academia_Portable_20260709/
+test_patch.tmp

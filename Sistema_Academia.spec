@@ -1,10 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+from pathlib import Path
+
+# Rutas de los DLL de Tcl/Tk resueltas contra el interprete que ejecuta este
+# build (antes estaban fijas a la carpeta de usuario de otra maquina y el
+# build fallaba en cualquier equipo distinto de ese).
+_dlls_dir = Path(sys.base_prefix) / "DLLs"
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[('C:\\Users\\Legen\\AppData\\Local\\Programs\\Python\\Python313\\DLLs\\_tkinter.pyd', '.'), ('C:\\Users\\Legen\\AppData\\Local\\Programs\\Python\\Python313\\DLLs\\tcl86t.dll', '.'), ('C:\\Users\\Legen\\AppData\\Local\\Programs\\Python\\Python313\\DLLs\\tk86t.dll', '.')],
+    binaries=[
+        (str(_dlls_dir / '_tkinter.pyd'), '.'),
+        (str(_dlls_dir / 'tcl86t.dll'), '.'),
+        (str(_dlls_dir / 'tk86t.dll'), '.'),
+    ],
     datas=[
         ('assets/login_escudo.png', 'assets'),
         ('assets/login_letras.png', 'assets'),
@@ -36,6 +47,7 @@ exe = EXE(
     upx=True,
     console=False,
     icon='assets/app_personaje.ico',
+    version='version_info.txt',
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

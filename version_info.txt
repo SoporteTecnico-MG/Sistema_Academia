@@ -1,0 +1,33 @@
+# UTF-8
+#
+# Metadatos de version incrustados en Sistema_Academia.exe. Se ven en
+# Windows: clic derecho sobre el .exe > Propiedades > pestana Detalles.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        u'040904B0',
+        [StringStruct(u'CompanyName', u'Mario Alexander Galiano Acuña'),
+        StringStruct(u'FileDescription', u'Sistema de Gestion Academica - Academia Pre Militar Policial Cnel. Leoncio Prado'),
+        StringStruct(u'FileVersion', u'1.0.0.0'),
+        StringStruct(u'InternalName', u'Sistema_Academia'),
+        StringStruct(u'LegalCopyright', u'© 2026 Mario Alexander Galiano Acuña. Todos los derechos reservados.'),
+        StringStruct(u'OriginalFilename', u'Sistema_Academia.exe'),
+        StringStruct(u'ProductName', u'Sistema de Gestion Academica'),
+        StringStruct(u'ProductVersion', u'1.0.0.0'),
+        StringStruct(u'Comments', u'Certificado y garantizado por el autor: Mario Alexander Galiano Acuña.')])
+      ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)

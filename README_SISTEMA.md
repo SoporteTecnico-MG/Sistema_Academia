@@ -7,9 +7,11 @@ Aplicacion de escritorio para registrar alumnos, programar aulas, cargar notas d
 - `main.py`: interfaz grafica del sistema. Controla login, formularios, carga de notas y botones de reportes.
 - `database.py`: capa de datos SQLite. Crea tablas, valida usuarios, guarda alumnos, aulas y evaluaciones.
 - `reportes.py`: generador de constancias PDF con logo, datos del alumno, fecha/hora de emision y tabla de notas.
+- `excel_io.py`: importacion y exportacion de estudiantes en formato Excel (.xlsx).
 - `datos_academia.db`: base de datos local. Debe viajar junto al ejecutable portable si se quieren conservar los datos.
 - `assets/`: imagenes e iconos usados por la interfaz y los reportes.
 - `Sistema_Academia.spec`: configuracion de PyInstaller para construir la version portable.
+- `requirements.txt`: dependencias de Python necesarias para ejecutar o reconstruir el sistema.
 
 ## Usuarios iniciales
 
@@ -23,6 +25,13 @@ Aplicacion de escritorio para registrar alumnos, programar aulas, cargar notas d
 3. Registrar estudiantes con codigo de matricula, DNI, nombres, apellidos y celular.
 4. Cargar notas por aula y fecha.
 5. Generar la constancia PDF ingresando DNI o codigo de matricula.
+
+## Importar / Exportar Excel
+
+Disponible solo para el rol Administrador, en "5. Importar/Exportar Excel":
+
+- **Exportar**: genera un `.xlsx` con todos los estudiantes registrados (Codigo_Matricula, DNI, Nombres, Apellidos, Telefono, Aula).
+- **Importar**: lee un `.xlsx` con columnas `DNI`, `Nombres`, `Apellidos`, `Telefono` (obligatorias) y `Codigo_Matricula`, `Aula` (opcionales). Si una fila no trae `Aula`, se usa el aula seleccionada en pantalla. Las filas invalidas (DNI/celular con formato incorrecto, aula inexistente, etc.) se reportan sin detener la importacion del resto.
 
 ## Reportes PDF
 
